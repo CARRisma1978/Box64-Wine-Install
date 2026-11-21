@@ -58,7 +58,7 @@ function _info_get_box64() {
 
 function _installed_version_box64() {
     local version=""
-    [[ -x /usr/local/bin/box64 ]] && version="$(timeout 10 /usr/local/bin/box64 --version 2>/dev/null | grep -m1 -i 'box64')"
+    [[ -x /usr/local/bin/box64 ]] && version="$(timeout 10 /usr/local/bin/box64 --version 2>&1 | grep -m1 -i 'box64')"
     [[ -z "$version" ]] && version="$(_info_get_box64 "$md_inst/current.info" version)"
     [[ -z "$version" ]] && version="not installed"
     echo "$version"
@@ -153,7 +153,7 @@ function install_box64() {
     runCmd env -u CFLAGS -u CXXFLAGS -u ASFLAGS -u LDFLAGS make -C "$build" install || return 1
     cp -f "$build/install_manifest.txt" "$md_inst/install_manifest.txt"
 
-    local version="$(timeout 10 "$build/box64" --version 2>/dev/null | grep -m1 -i 'box64')"
+    local version="$(timeout 10 "$build/box64" --version 2>&1 | grep -m1 -i 'box64')"
     cat > "$md_inst/current.info" <<_EOF_
 version="$version"
 branch="$(_branch_box64)"
