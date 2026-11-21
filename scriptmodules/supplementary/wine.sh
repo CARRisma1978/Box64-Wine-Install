@@ -437,7 +437,7 @@ function _status_wine() {
     local active="$(_active_version_wine)"
     [[ -z "$active" ]] && active="none"
     local box64="not installed"
-    [[ -x /usr/local/bin/box64 ]] && box64="$(timeout 10 /usr/local/bin/box64 --version 2>/dev/null | grep -m1 -i 'box64')"
+    [[ -x /usr/local/bin/box64 ]] && box64="$(timeout 10 /usr/local/bin/box64 --version 2>&1 | grep -m1 -i 'box64')"
     [[ -z "$box64" ]] && box64="installed"
     local es="no"
     _es_has_system_wine && es="yes"
