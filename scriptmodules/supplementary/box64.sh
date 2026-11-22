@@ -7,7 +7,8 @@
 # /etc/box64.box64rc, /usr/lib/box64-x86_64-linux-gnu/).
 #
 # Configuration / Options menu:
-#   - choose what to build: the latest source code, or a specific release tag
+#   - choose what to build: the newest release ("latest" - Update moves to each
+#     new release), or a specific release (Update stays on it)
 #   - restore the previous build (the build that was replaced is always kept)
 #   - status (version, page size, kernel=kernel8.img, binfmt)
 #
@@ -15,9 +16,9 @@
 
 rp_module_id="box64"
 rp_module_desc="Box64 - x86_64 emulator used by Wine (built from source for the Pi 5)"
-rp_module_help="Builds Box64 from https://github.com/ptitSeb/box64 with -DRPI5ARM64=1 and installs it system wide.\n\nUse 'Configuration / Options' to choose between the latest source code and a specific release, to restore the previous build, or to check the status.\n\nBox64 and Wine need the 4KB page kernel on the Pi 5. If kernel=kernel8.img is not already set, it is added to the end of the boot config.txt under [all] - a reboot is then needed."
+rp_module_help="Builds Box64 from https://github.com/ptitSeb/box64 with -DRPI5ARM64=1 and installs it system wide.\n\nUse 'Configuration / Options' to choose between the newest release ('latest' - Update moves to each new release) and a specific release (Update stays on it), to restore the previous build, or to check the status.\n\nBox64 and Wine need the 4KB page kernel on the Pi 5. If kernel=kernel8.img is not already set, it is added to the end of the boot config.txt under [all] - a reboot is then needed."
 rp_module_licence="MIT https://raw.githubusercontent.com/ptitSeb/box64/main/LICENSE"
-rp_module_repo="git https://github.com/ptitSeb/box64.git :_branch_box64"
+rp_module_repo="git :_repo_box64 :_branch_box64"
 rp_module_section="exp"
 rp_module_flags="!all rpi5 !32bit noinstclean"
 
@@ -44,10 +45,53 @@ function _set_setting_box64() {
     chown "$__user":"$__group" "$file"
 }
 
-# the git branch / tag to build: "main" for the latest source, otherwise a release tag
+function _repo_box64() {
+    echo "https://github.com/ptitSeb/box64.git"
+}
+
+# all Box64 release tags, newest first - cached for 10 minutes so the menus stay quick
+function _tags_box64() {
+    local cache="$__tmpdir/box64-tags.cache"
+    if [[ -s "$cache" && -n "$(find "$cache" -mmin -10 2>/dev/null)" ]]; then
+        cat "$cache"
+        return 0
+    fi
+    local list
+    list="$(git ls-remote --tags --refs "$(_repo_box64)" 2>/dev/null \
+        | awk -F/ '{print $3}' | grep -E '^v[0-9]' | sort -rV)"
+    if [[ -z "$list" ]]; then
+        # no network - use an older list if there is one
+        [[ -s "$cache" ]] && cat "$cache" && return 0
+        return 1
+    fi
+    mkdir -p "$__tmpdir"
+    echo "$list" > "$cache"
+    echo "$list"
+}
+
+# the release tag to build: the chosen one, or the newest release for "latest"
 function _branch_box64() {
     local version="$(_get_setting_box64 version latest)"
-    [[ "$version" == "latest" ]] && version="main"
+    if [[ "$version" == "latest" ]]; then
+        version="$(_tags_box64 | head -n1)"
+        # can't reach GitHub - stay on the release that is installed
+        if [[ -z "$version" ]]; then
+            local info
+            for info in "$rootdir"/*/box64/current.info; do
+                [[ -f "$info" ]] && version="$(_info_get_box64 "$info" branch)"
+            done
+        fi
+    fi
+    echo "$version"
+}
+
+# what is chosen, for the menus: e.g. "latest (v0.4.5-1)" or "v0.4.4"
+function _chosen_box64() {
+    local version="$(_get_setting_box64 version latest)"
+    if [[ "$version" == "latest" ]]; then
+        local newest="$(_tags_box64 | head -n1)"
+        [[ -n "$newest" ]] && version+=" ($newest)"
+    fi
     echo "$version"
 }
 
@@ -117,8 +161,8 @@ function depends_box64() {
 }
 
 function sources_box64() {
-    # always start from a fresh clone, so switching between the latest source
-    # and a release tag can't trip over an old checkout
+    # always start from a fresh clone - an old shallow clone of one release
+    # can't check out a different release
     find "$md_build" -mindepth 1 -delete 2>/dev/null
     gitPullOrClone
 }
@@ -191,18 +235,13 @@ function remove_box64() {
         rm -f /usr/local/bin/box64 /etc/binfmt.d/box64.conf /etc/box64.box64rc
         rm -rf /usr/lib/box64-x86_64-linux-gnu /usr/lib/box64-i386-linux-gnu
     fi
-    rm -f "$(_config_box64)"
+    rm -f "$(_config_box64)" "$__tmpdir/box64-tags.cache"
     systemctl restart systemd-binfmt
 
     md_ret_info+=("Box64 has been removed.\n\nkernel=kernel8.img has been left in place in:\n\n$(_boot_config_box64)\n\nIt is harmless, and Wine needs it if Box64 is installed again. Remove the line by hand if you no longer want the 4KB page kernel.")
 }
 
 # ----- Configuration / Options --------------------------------------------------
-
-function _tags_box64() {
-    git ls-remote --tags --refs "$(rp_resolveRepoParam "$md_repo_url")" 2>/dev/null \
-        | awk -F/ '{print $3}' | grep -E '^v[0-9]' | sort -rV
-}
 
 # run an install with its output shown on screen as well as written to the log
 function _install_now_box64() {
@@ -222,14 +261,14 @@ function _choose_version_box64() {
         return
     fi
 
-    local options=(latest "Latest source code (main branch)")
+    local options=(latest "Newest release (now ${tags[0]})")
     local tag
     for tag in "${tags[@]}"; do
         options+=("$tag" "Release $tag")
     done
 
     local cmd=(dialog --backtitle "$__backtitle" --cancel-label "Back" --default-item "$current" \
-        --menu "Which Box64 should be built?\n\nCurrently chosen: $current\n\n'latest' follows the newest source code on every update. A release stays on that release until you choose something else." 22 76 12)
+        --menu "Which Box64 should be built?\n\nCurrently chosen: $(_chosen_box64)\n\n'latest' moves to each new release when you choose Update. A release stays on that release until you choose something else." 22 76 12)
     local choice
     choice=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)
     [[ -z "$choice" ]] && return
@@ -237,15 +276,11 @@ function _choose_version_box64() {
     _set_setting_box64 version "$choice"
     rp_clearCachedInfo "$md_id"
 
-    # build if a different branch / tag was chosen, the chosen one has new
-    # commits, or the box64 program is missing (e.g. removed by another package)
+    # build if a different release was chosen (or 'latest' now means a newer
+    # one), or the box64 program is missing (e.g. removed by another package)
     local installed_branch="$(_info_get_box64 "$md_inst/current.info" branch)"
     local need=1
-    if [[ "$(_branch_box64)" == "$installed_branch" && -x /usr/local/bin/box64 ]]; then
-        local __ignore_module_date=1
-        rp_hasNewerModule "$md_id" "source"
-        [[ "$?" -eq 0 ]] || need=0
-    fi
+    [[ "$(_branch_box64)" == "$installed_branch" && -x /usr/local/bin/box64 ]] && need=0
     if [[ "$need" -eq 1 ]]; then
         if dialog --backtitle "$__backtitle" --yesno "Build and install Box64 ($choice) now?\n\nThis takes several minutes. If you choose No, it will be built the next time you choose Update." 12 70 2>&1 >/dev/tty; then
             _install_now_box64
@@ -300,13 +335,10 @@ function _restore_box64() {
     rp_clearCachedInfo "$md_id"
 
     local msg="Box64 restored:\n\n$(_installed_version_box64)"
-    local chosen="$(_get_setting_box64 version latest)"
+    local chosen="$(_chosen_box64)"
     local restored="$(_info_get_box64 "$md_inst/current.info" branch)"
     if [[ "$(_branch_box64)" != "$restored" ]]; then
-        [[ "$restored" == "main" ]] && restored="latest"
         msg+="\n\nNote: Box64 is set to build '$chosen', so Update would build that again. To keep this build, choose '$restored' under 'Choose which Box64 to build'."
-    elif [[ "$chosen" == "latest" ]]; then
-        msg+="\n\nNote: 'latest' is chosen, so Update will build the newest source code again when there are new changes. To stay on a fixed version, choose a release under 'Choose which Box64 to build'."
     fi
     printMsgs "dialog" "$msg"
 }
@@ -323,14 +355,13 @@ function _status_box64() {
     [[ -f "$md_inst/previous.tar" ]] && prev="$(_info_get_box64 "$md_inst/previous.info" version)"
     local commit="$(_info_get_box64 "$md_inst/current.info" commit)"
 
-    printMsgs "dialog" "Installed: $(_installed_version_box64)\nBuilt from: $(_info_get_box64 "$md_inst/current.info" branch) ${commit:0:9}\nChosen to build: $(_get_setting_box64 version latest)\nPrevious build kept: $prev\n\nPage size: $page_msg\nkernel=kernel8.img in $(_boot_config_box64): $kernel8\nRegistered for x86_64 programs (binfmt): $binfmt"
+    printMsgs "dialog" "Installed: $(_installed_version_box64)\nBuilt from: $(_info_get_box64 "$md_inst/current.info" branch) ${commit:0:9}\nChosen to build: $(_chosen_box64)\nPrevious build kept: $prev\n\nPage size: $page_msg\nkernel=kernel8.img in $(_boot_config_box64): $kernel8\nRegistered for x86_64 programs (binfmt): $binfmt"
 }
 
 function gui_box64() {
     local default
     while true; do
-        local version="$(_get_setting_box64 version latest)"
-        local options=(1 "Choose which Box64 to build (now: $version)")
+        local options=(1 "Choose which Box64 to build (now: $(_chosen_box64))")
         if [[ -f "$md_inst/previous.tar" ]]; then
             options+=(2 "Restore previous build ($(_info_get_box64 "$md_inst/previous.info" version))")
         fi

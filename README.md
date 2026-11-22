@@ -9,7 +9,7 @@ RetroPie-Setup modules for running Windows games on a **Raspberry Pi 5** with [B
 | Module | What it does |
 |---|---|
 | `wine-deps.sh` | Installs the packages the Windows game launch scripts use (X server, xinit, python3, ALSA utilities, GStreamer for in-game videos). Also checks for passwordless sudo and the `snd-aloop` kernel module. |
-| `box64.sh` | Builds Box64 from source for the Pi 5 (`-DRPI5ARM64=1`) and installs it system wide. You can choose the latest source code or a specific release, and restore the previous build. Adds `kernel=kernel8.img` to `config.txt` if it's missing (Box64 and Wine need the 4KB page kernel). |
+| `box64.sh` | Builds Box64 from source for the Pi 5 (`-DRPI5ARM64=1`) and installs it system wide. You can choose the newest release (`latest`, the default) or a specific release, and restore the previous build. Adds `kernel=kernel8.img` to `config.txt` if it's missing (Box64 and Wine need the 4KB page kernel). |
 | `wine.sh` | Downloads Kron4ek's vanilla x86_64 WoW64 Wine build to `~/wine-wow64/wine-<version>`, with `~/wine-wow64/wine` linked to the active version. You can choose a version, and switch between or delete downloaded versions. Also sets up the Windows system in EmulationStation. |
 | `pulseaudio.sh` | *Optional.* Installs PulseAudio with its services masked, so it never starts by itself. A game launch script can start its own private PulseAudio while that game runs (`SOUND_MIXER=1`). |
 | `fluidsynth.sh` | *Optional.* Installs FluidSynth and the FluidR3 General MIDI soundfont for games with MIDI music. Its service is masked, so it only runs when a game launch script starts it. |
@@ -118,7 +118,7 @@ This path stays the same when you switch Wine versions.
 
 In RetroPie-Setup, choose **Update** on a module.
 
-- **Box64** rebuilds if the chosen source has new changes. The build it replaces is kept and can be restored from Configuration / Options.
+- **Box64** moves to the newest release only if `latest` is chosen; a specific release stays as it is. The build it replaces is kept and can be restored from Configuration / Options.
 - **Wine** moves to the newest release only if `latest` is chosen.
 - **wine-deps, pulseaudio and fluidsynth** install anything missing and upgrade their packages if apt has newer versions.
 
