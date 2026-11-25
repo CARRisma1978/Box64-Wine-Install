@@ -274,14 +274,13 @@ function _as_user_wine() {
 }
 
 # _master_update_wine - creates the master prefix, or updates it to the
-# (callers give it no terminal: </dev/null >/dev/null 2>&1 - with the
-# terminal as its input, Wine writes to the screen behind the dialogs)
-#
 # active Wine; nothing to do if it's up to date (marker .wine_updated = the
 # active Wine's wine.inf time, as the launchers check). Before an update it
 # gets its own copy of every file it shares, so Wine never writes into files
 # the games share. If it's interrupted, the marker isn't written and it's
 # simply done again next time.
+# (callers give it no terminal: </dev/null >/dev/null 2>&1 - with the
+# terminal as its input, Wine writes to the screen behind the dialogs)
 function _master_update_wine() {
     local master="$(_master_wine)" bin="$(_root_wine)/wine/bin"
     local inf="$(_root_wine)/wine/share/wine/wine.inf" box64 stamp mode="-i"
