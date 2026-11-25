@@ -15,10 +15,22 @@
 # Configuration / Options menu:
 #   - choose a version: the newest release, or a specific one
 #   - installed versions: switch between them, or delete them (with sizes)
+#   - sharing identical Wine files between the game prefixes: on/off, and
+#     "Share now" for all of them
 #   - status
 #
+# Sharing: each game's prefix (~/wine-prefixes/<game>) holds its own ~600 MB
+# copy of Wine's files (drive_c/windows/system32 and syswow64), nearly all
+# identical. With sharing on, those identical files are hard links to one
+# copy, kept in a plain prefix of their own: ~/wine-prefixes/.master. This
+# module makes it and updates it with each Wine version; the game launchers'
+# shared code (common.inc) shares each game's files as it starts, and never
+# updates a prefix while it shares. A game whose script sets PREFIX_LINK=0
+# never shares (marker .nolink in its prefix - "Share now" skips it).
+#
 # Removing Wine deletes ~/wine-wow64 and the windows entry in EmulationStation.
-# ~/RetroPie/roms/windows, configs/windows and ~/wine-prefixes are kept.
+# ~/RetroPie/roms/windows, configs/windows and ~/wine-prefixes (with .master)
+# are kept.
 #
 # Settings are kept in /opt/retropie/configs/all/wine-setup.cfg
 
@@ -239,6 +251,172 @@ _EOF_
     rm -f "$tmp"
 }
 
+# ----- sharing Wine files between the game prefixes -----------------------------
+
+function _prefixes_wine() {
+    echo "$home/wine-prefixes"
+}
+
+function _master_wine() {
+    echo "$(_prefixes_wine)/.master"
+}
+
+function _share_on_wine() {
+    [[ "$(_get_setting_wine share_prefixes off)" == "on" ]]
+}
+
+# _as_user_wine command... - runs it as the RetroPie user, with the Wine
+# settings the game launchers use (no Mono/Gecko, no menu entries, no debugger)
+function _as_user_wine() {
+    ( cd "$home" && sudo -u "$__user" env HOME="$home" WINEARCH=win64 WINEDEBUG=-all \
+        BOX64_LOG=0 BOX64_NOBANNER=1 \
+        WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;winedbg.exe=d" "$@" )
+}
+
+# _master_update_wine - creates the master prefix, or updates it to the
+# (callers give it no terminal: </dev/null >/dev/null 2>&1 - with the
+# terminal as its input, Wine writes to the screen behind the dialogs)
+#
+# active Wine; nothing to do if it's up to date (marker .wine_updated = the
+# active Wine's wine.inf time, as the launchers check). Before an update it
+# gets its own copy of every file it shares, so Wine never writes into files
+# the games share. If it's interrupted, the marker isn't written and it's
+# simply done again next time.
+function _master_update_wine() {
+    local master="$(_master_wine)" bin="$(_root_wine)/wine/bin"
+    local inf="$(_root_wine)/wine/share/wine/wine.inf" box64 stamp mode="-i"
+    [[ -f "$inf" ]] || return 1
+    stamp="$(stat -c %Y "$inf")"
+    [[ "$(cat "$master/.wine_updated" 2>/dev/null)" == "$stamp" ]] && return 0
+    box64="$(command -v box64 || echo /usr/local/bin/box64)"
+    _as_user_wine mkdir -p "$master"
+    rm -f "$master/.wine_updated"
+    if [[ -f "$master/system.reg" ]]; then
+        mode="-u"
+        _as_user_wine bash -c 'find "$1/drive_c/windows/system32" "$1/drive_c/windows/syswow64" \
+            -type f -links +1 -print0 2>/dev/null | while IFS= read -r -d "" f; do
+                cp -p "$f" "$f.unshare" && mv -f "$f.unshare" "$f"; done' _ "$master"
+    fi
+    _as_user_wine env WINEPREFIX="$master" "$box64" "$bin/wine" wineboot "$mode"
+    _as_user_wine env WINEPREFIX="$master" "$box64" "$bin/wineserver" -w
+    [[ -f "$master/system.reg" ]] || return 1
+    _as_user_wine bash -c 'echo "$1" > "$2/.wine_updated"' _ "$stamp" "$master"
+}
+
+# after a new or different Wine version is made active (sharing on): false,
+# with the message in SHARE_ERROR_WINE, if the master couldn't be updated
+function _master_after_switch_wine() {
+    SHARE_ERROR_WINE=""
+    _master_update_wine </dev/null >/dev/null 2>&1 && return 0
+    SHARE_ERROR_WINE="Could not prepare the shared Wine files ($(_master_wine)). The games will try again when they start."
+    return 1
+}
+
+function _hardlink_opts_wine() {
+    # same folder and name, same contents (owner, permissions and times ignored)
+    local opts="-p -o -t -f -m"
+    hardlink --help 2>&1 | grep -q -- '--respect-dir' && opts+=" -d"
+    echo "$opts"
+}
+
+# _share_now_wine - shares the identical Wine files of every game prefix
+# (except .nolink ones) with the master, showing progress and the space saved
+function _share_now_wine() {
+    local root="$(_prefixes_wine)" master="$(_master_wine)"
+    if ! command -v hardlink >/dev/null; then
+        printMsgs "dialog" "hardlink was not found (it's part of util-linux), so nothing can be shared."
+        return 1
+    fi
+    dialog --backtitle "$__backtitle" --infobox "Preparing the shared Wine files (Wine $(_active_version_wine)) ...\n\nThe first time, or after a Wine update, this takes a minute or two." 7 60 >/dev/tty
+    if ! _master_update_wine </dev/null >/dev/null 2>&1; then
+        printMsgs "dialog" "Could not prepare the shared Wine files in $master."
+        return 1
+    fi
+
+    local prefixes=() p skipped=0
+    for p in "$root"/*/; do
+        p="${p%/}"
+        [[ -f "$p/system.reg" ]] || continue
+        if [[ -f "$p/.nolink" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        prefixes+=("$p")
+    done
+    if [[ "${#prefixes[@]}" -eq 0 ]]; then
+        printMsgs "dialog" "There are no game prefixes in $root to share yet."
+        return 0
+    fi
+
+    dialog --backtitle "$__backtitle" --infobox "Measuring the game prefixes ..." 3 50 >/dev/tty
+    local before after stamp opts
+    before="$(du -sb "$root" | cut -f1)"
+    stamp="$(cat "$master/.wine_updated")"
+    read -r -a opts <<< "$(_hardlink_opts_wine)"
+    local n="${#prefixes[@]}" i=0 d
+    {
+        trap '' PIPE                    # (the sharing carries on if the gauge goes)
+        for p in "${prefixes[@]}"; do
+            printf 'XXX\n%d\nSharing Wine files: %s (%d of %d)\nXXX\n' \
+                $(( i * 100 / n )) "${p##*/}" $(( i + 1 )) "$n" 2>/dev/null
+            for d in system32 syswow64; do
+                [[ -d "$master/drive_c/windows/$d" && -d "$p/drive_c/windows/$d" ]] || continue
+                hardlink -q "${opts[@]}" "$master/drive_c/windows/$d" "$p/drive_c/windows/$d" >/dev/null 2>&1
+            done
+            # (a prefix not yet updated to this Wine is unshared and shared
+            #  again by its game's next start anyway)
+            echo "$stamp" > "$p/.shared"
+            chown "$__user":"$__group" "$p/.shared"
+            i=$(( i + 1 ))
+        done
+        printf 'XXX\n100\nMeasuring the game prefixes ...\nXXX\n' 2>/dev/null
+    } | dialog --backtitle "$__backtitle" --title "Share now" --gauge "Sharing Wine files ..." 8 70 0 >/dev/tty
+    after="$(du -sb "$root" | cut -f1)"
+
+    local saved=$(( before - after ))
+    (( saved < 0 )) && saved=0
+    local msg="$n game prefixes, $(numfmt --to=iec "$saved") saved - now $(numfmt --to=iec "$after") in all"
+    _set_setting_wine share_last "$(date '+%Y-%m-%d %H:%M'): $msg"
+    local extra=""
+    [[ "$skipped" -gt 0 ]] && extra="\n\nLeft out: $skipped (their scripts set PREFIX_LINK=0)."
+    printMsgs "dialog" "Shared: $msg.\n\nBefore: $(numfmt --to=iec "$before")\nAfter:  $(numfmt --to=iec "$after")$extra"
+}
+
+function _share_toggle_wine() {
+    if _share_on_wine; then
+        dialog --backtitle "$__backtitle" --defaultno --yesno "Turn off sharing identical Wine files between game prefixes?\n\nGames that already share keep their shared files (that's safe: a game never updates its prefix while it shares). New prefixes and Wine updates won't be shared.\n\nA game gets its own copies back if its script sets PREFIX_LINK=0." 14 70 2>&1 >/dev/tty || return
+        _set_setting_wine share_prefixes off
+        return
+    fi
+    if ! command -v hardlink >/dev/null; then
+        printMsgs "dialog" "hardlink was not found (it's part of util-linux) - sharing needs it."
+        return
+    fi
+    local cmd=(dialog --backtitle "$__backtitle" --cancel-label "Back" --menu "Share identical Wine files between game prefixes?\n\nEach game's prefix holds its own ~600 MB copy of Wine's files. Shared, they're kept once ($(_master_wine))." 14 76 2)
+    local choice
+    choice=$("${cmd[@]}" \
+        1 "Turn sharing on, and share all the game prefixes now" \
+        2 "Turn sharing on - each game shares when it next starts" 2>&1 >/dev/tty)
+    case "$choice" in
+        1) _set_setting_wine share_prefixes on; _share_now_wine ;;
+        2) _set_setting_wine share_prefixes on ;;
+    esac
+}
+
+function _share_status_wine() {
+    local master="$(_master_wine)" inf="$(_root_wine)/wine/share/wine/wine.inf" m="not made yet"
+    if [[ -f "$master/.wine_updated" ]]; then
+        if [[ -f "$inf" && "$(cat "$master/.wine_updated")" == "$(stat -c %Y "$inf")" ]]; then
+            m="up to date"
+        else
+            m="for another Wine version (updated when needed)"
+        fi
+    fi
+    local state="off"
+    _share_on_wine && state="on"
+    echo "Sharing Wine files between game prefixes: $state\nShared copy ($master): $m\nLast 'Share now': $(_get_setting_wine share_last never)"
+}
+
 # ----- module functions ---------------------------------------------------------
 
 function depends_wine() {
@@ -294,6 +472,10 @@ function install_wine() {
 
     _activate_wine "$version"
     printMsgs "console" "Wine $version is active: $root/wine -> wine-$version"
+    if _share_on_wine; then
+        printMsgs "console" "Updating the shared Wine files ($(_master_wine)) ..."
+        _master_after_switch_wine || md_ret_errors+=("$SHARE_ERROR_WINE")
+    fi
     md_ret_require=("$root/wine/bin/wine")
 }
 
@@ -421,6 +603,10 @@ function _manage_versions_wine() {
                 _activate_wine "$choice"
                 _set_setting_wine version "$choice"
                 rp_setPackageInfo "$md_id" "source"
+                if _share_on_wine; then
+                    dialog --backtitle "$__backtitle" --infobox "Updating the shared Wine files for Wine $choice ...\n\nThis takes a minute or two." 6 60 >/dev/tty
+                    _master_after_switch_wine || printMsgs "dialog" "$SHARE_ERROR_WINE"
+                fi
                 printMsgs "dialog" "Wine $choice is now active.\n\nUpdate will stay on this version. To follow new releases again, choose 'latest' under 'Choose Wine version'."
                 ;;
             2)
@@ -444,26 +630,35 @@ function _status_wine() {
     local emucfg="no"
     [[ -f "$configdir/windows/emulators.cfg" ]] && emucfg="yes"
 
-    printMsgs "dialog" "Active Wine: $active\nChosen version: $(_get_setting_wine version latest)\nDownloaded: $(_installed_versions_wine | tr '\n' ' ')\n\nWINE_DIR=\"\$HOME/wine-wow64/wine/bin\"\n$root/wine -> $(readlink "$root/wine" 2>/dev/null)\n\nBox64: $box64\nWindows system in EmulationStation: $es\n$configdir/windows/emulators.cfg: $emucfg"
+    dialog --backtitle "$__backtitle" --infobox "Measuring the game prefixes ..." 3 50 >/dev/tty
+    local psize="$(du -sh "$(_prefixes_wine)" 2>/dev/null | cut -f1)"
+
+    printMsgs "dialog" "Active Wine: $active\nChosen version: $(_get_setting_wine version latest)\nDownloaded: $(_installed_versions_wine | tr '\n' ' ')\n\nWINE_DIR=\"\$HOME/wine-wow64/wine/bin\"\n$root/wine -> $(readlink "$root/wine" 2>/dev/null)\n\nBox64: $box64\nWindows system in EmulationStation: $es\n$configdir/windows/emulators.cfg: $emucfg\n\nGame prefixes ($(_prefixes_wine)): ${psize:-none}\n$(_share_status_wine)"
 }
 
 function gui_wine() {
     local default
     while true; do
+        local share="off"
+        _share_on_wine && share="on"
         local options=(
             1 "Choose Wine version (now: $(_get_setting_wine version latest))"
             2 "Downloaded versions (switch / delete)"
-            3 "Status"
+            3 "Share identical Wine files between game prefixes: $share"
+            4 "Share now (all game prefixes)"
+            5 "Status"
         )
         local cmd=(dialog --backtitle "$__backtitle" --cancel-label "Back" --default-item "$default" \
-            --menu "Wine options\n\nActive version: $(_active_version_wine)" 16 76 6)
+            --menu "Wine options\n\nActive version: $(_active_version_wine)" 18 76 8)
         local choice
         choice=$("${cmd[@]}" "${options[@]}" 2>&1 >/dev/tty)
         default="$choice"
         case "$choice" in
             1) _choose_version_wine ;;
             2) _manage_versions_wine ;;
-            3) _status_wine ;;
+            3) _share_toggle_wine ;;
+            4) _share_now_wine ;;
+            5) _status_wine ;;
             *) break ;;
         esac
     done

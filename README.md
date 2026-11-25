@@ -10,7 +10,7 @@ RetroPie-Setup modules for running Windows games on a **Raspberry Pi 5** with [B
 |---|---|
 | `wine-deps.sh` | Installs the packages the Windows game launch scripts use (X server, xinit, python3, ALSA utilities, GStreamer for in-game videos). Also checks for passwordless sudo and the `snd-aloop` kernel module. |
 | `box64.sh` | Builds Box64 from source for the Pi 5 (`-DRPI5ARM64=1`) and installs it system wide. You can choose the newest release (`latest`, the default) or a specific release, and restore the previous build. Adds `kernel=kernel8.img` to `config.txt` if it's missing (Box64 and Wine need the 4KB page kernel). |
-| `wine.sh` | Downloads Kron4ek's vanilla x86_64 WoW64 Wine build to `~/wine-wow64/wine-<version>`, with `~/wine-wow64/wine` linked to the active version. You can choose a version, and switch between or delete downloaded versions. Also sets up the Windows system in EmulationStation. |
+| `wine.sh` | Downloads Kron4ek's vanilla x86_64 WoW64 Wine build to `~/wine-wow64/wine-<version>`, with `~/wine-wow64/wine` linked to the active version. You can choose a version, and switch between or delete downloaded versions. Also sets up the Windows system in EmulationStation. Optionally shares the identical Wine files between the game prefixes (hard links to one copy), saving about 600 MB per game. |
 | `pulseaudio.sh` | *Optional.* Installs PulseAudio with its services masked, so it never starts by itself. A game launch script can start its own private PulseAudio while that game runs (`SOUND_MIXER=1`). |
 | `fluidsynth.sh` | *Optional.* Installs FluidSynth and the FluidR3 General MIDI soundfont for games with MIDI music. Its service is masked, so it only runs when a game launch script starts it. |
 
@@ -114,6 +114,10 @@ WINE_DIR="$HOME/wine-wow64/wine/bin"
 
 This path stays the same when you switch Wine versions.
 
+### Sharing Wine files between games
+
+Each game's Wine prefix (`~/wine-prefixes/<game>`) holds about 600 MB of Wine files, nearly all identical. In the wine module's **Configuration / Options**, you can turn on sharing: the identical files then become hard links to one copy in `~/wine-prefixes/.master`, which the module keeps up to date with each Wine version. Anything a game changes or adds stays its own. **Share now** shares every game's prefix straight away and shows the space saved; otherwise each game shares when it next starts. A game can opt out with `PREFIX_LINK=0` in its script. Sharing needs the [Box64-Wine-GameScripts](https://github.com/CARRisma1978/Box64-Wine-GameScripts) launchers, which do the sharing as each game starts.
+
 ## Updating
 
 In RetroPie-Setup, choose **Update** on a module.
@@ -126,7 +130,7 @@ In RetroPie-Setup, choose **Update** on a module.
 
 Choose **Remove** on a module.
 
-- **wine** deletes `~/wine-wow64` and the Windows system entry. Your games (`roms/windows`), `configs/windows` and `~/wine-prefixes` are kept.
+- **wine** deletes `~/wine-wow64` and the Windows system entry. Your games (`roms/windows`), `configs/windows` and `~/wine-prefixes` (including the shared copy, `.master`) are kept.
 - **box64** deletes the installed files. `kernel=kernel8.img` is left in `config.txt`; remove it by hand if you no longer want it.
 - **pulseaudio** and **fluidsynth** unmask their services and uninstall their packages.
 - **wine-deps** leaves its packages installed, as RetroPie and Raspberry Pi OS use them too.
